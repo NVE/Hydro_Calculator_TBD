@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NVE Hydro Calculator Pro v4</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/docx/8.2.0/docx.umd.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .formula { font-family: 'JetBrains Mono', monospace; font-size: 0.9em; }
+        @media print { .no-print { display: none !important; } body { background: white !important; color: black !important; } }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // ============ UTILITY COMPONENTS ============
+        const InputField = ({ label, value, onChange, unit, min, max, step = "any", tooltip }) => (
+            <div className="mb-3">
+                <label className="block text-sm text-slate-400 mb-1" title={tooltip}>
+                    {label} {tooltip && <span className="text-amber-500 cursor-help">ⓘ</span>}
+                </label>
+                <div className="flex">
+                    <input
+                        type="number"
+                        value={value === null || value === undefined ? '' : value}
+                        onChange={(e) => onChange(e.target.value === '' ? null : parseFloat(e.target.value))}
+                        min={min} max={max} step={step}
+                        placeholder="—"
+                        className="mono flex-1 bg-slate-800 border border-slate-600 rounded-l px-3 py-2 text-amber-400 focus:outline-none focus:border-amber-500 placeholder-slate-600"
+                    />
+                    {unit && <span className="bg-slate-700 border border-l-0 border-slate-600 rounded-r px-3 py-2 text-slate-400 text-sm">{unit}</span>}
+                </div>
+            </div>
+        );
+
+        const SelectField = ({ label, value, onChange, options, tooltip }) => (
+            <div className="mb-3">
+                <label className="block text-sm text-slate-400 mb-1">{label}</label>
+                <select value={value} onChange={(e) => onChange(e.target.value)}
+                    className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-amber-400 focus:outline-none focus:border-amber-500">
+                    {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                </select>
+            </div>
+        );
+
+        const TextInput = ({ label, value, onChange, placeholder }) => (
+            <div className="mb-3">
+                <label className="block text-sm text-slate-400 mb-1">{label}</label>
+                <input type="text" value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+                    className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-slate-100 focus:outline-none focus:border-amber-500 placeholder-slate-600" />
+            </div>
+        );
+
+        const Result = ({ label, value, unit, highlight, large }) => (
+            <div className={`p-3 rounded ${highlight ? 'bg-amber-900/30 border border-amber-600' : 'bg-slate-800'} ${large ? 'col-span-2' : ''}`}>
+                <div className="text-sm text-slate-400">{label}</div>
+                <div className={`mono ${large ? 'text-2xl' : 'text-xl'} ${highlight ? 'text-amber-400' : 'text-emerald-400'} font-semibold`}>
+                    {value === null || value === undefined || (typeof value === 'number' && isNaN(value)) ? '—' : 
+                        (typeof value === 'number' ? value.toLocaleString('no-NO', { maximumFractionDigits: 4 }) : value)}
+                    {unit && value !== null && <span className="text-sm ml-1 text-slate-400">{unit}</span>}
+                </div>
+            </div>
+        );
+
+        const Section = ({ title, children, defaultOpen = true }) => {
+            const [open, setOpen] = useState(defaultOpen);
+            return (
+                <div className="mb-4">
+                    <button onClick={() => setOpen(!open)}
+                        className="w-full flex justify-between items-center p-2 bg-slate-800 rounded hover:bg-slate-700 transition">
+                        <span className="font-medium text-slate-300">{title}</span>
+                        <span className="text-amber-400">{open ? '−' : '+'}</span>
+                    </button>
+                    {open && <div className="mt-2 p-3 bg-slate-800/50 rounded">{children}</div>}
+                </div>
+            );
+        };
+
+        const CalcStep = ({ step, formula, substitution, result }) => (
+            <div className="mb-2 p-2 bg-slate-800/50 rounded text-sm">
+                <div className="text-slate-400 text-xs mb-1">Steg {step}</div>
+                <div className="formula text-slate-300">{formula}</div>
+                {substitution && <div className="formula text-amber-400/80 mt-1">{substitution}</div>}
+                {result && <div className="formula text-emerald-400 mt-1">= {result}</div>}
+            </div>
+        );
+
+        const Alert = ({ type, children }) => {
+            const styles = {
+                warning: 'bg-yellow-900/30 border-yellow-600 text-yellow-200',
+                info: 'bg-blue-900/30 border-blue-600 text-blue-200',
+                success: 'bg-emerald-900/30 border-emerald-600 text-emerald-200'
+            };
+            return <div className={`p-3 rounded border ${styles[type]} mb-4`}>{children}</div>;
+        };
+
+        // ============ CHART COMPONENT ============
+        const Chart = ({ data, title, xLabel, yLabel, yLabel2, color = '#f59e0b', color2 = '#22d3ee', width = 480, height = 280, showY2 = false }) => {
+            const canvasRef = useRef(null);
+            
+            useEffect(() => {
+                if (!canvasRef.current || !data || data.length === 0) return;
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                const dpr = window.devicePixelRatio || 1;
+                
+                canvas.width = width * dpr;
+                canvas.height = height * dpr;
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.scale(dpr, dpr);
+                
+                const pad = { top: 45, right: showY2 ? 65 : 20, bottom: 45, left: 65 };
+                const cw = width - pad.left - pad.right;
+                const ch = height - pad.top - pad.bottom;
+                
+                ctx.fillStyle = '#1e293b';
+                ctx.fillRect(0, 0, width, height);
+                
+                const xMax = Math.max(...data.map(d => d.x));
+                const y1Max = Math.max(...data.map(d => d.y)) * 1.1 || 1;
+                const y2Min = showY2 ? Math.min(...data.map(d => d.y2 || 0)) * 0.95 : 0;
+                const y2Max = showY2 ? Math.max(...data.map(d => d.y2 || 0)) * 1.05 : 1;
+                
+                const xScale = (x) => pad.left + (x / (xMax || 1)) * cw;
+                const y1Scale = (y) => pad.top + ch - (y / y1Max) * ch;
+                const y2Scale = (y) => pad.top + ch - ((y - y2Min) / ((y2Max - y2Min) || 1)) * ch;
+                
+                // Grid
+                ctx.strokeStyle = '#334155';
+                ctx.lineWidth = 0.5;
+                for (let i = 0; i <= 5; i++) {
+                    const y = pad.top + (ch / 5) * i;
+                    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke();
+                }
+                
+                // Axes
+                ctx.strokeStyle = '#64748b';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(pad.left, pad.top);
+                ctx.lineTo(pad.left, height - pad.bottom);
+                ctx.lineTo(width - pad.right, height - pad.bottom);
+                if (showY2) { ctx.moveTo(width - pad.right, pad.top); ctx.lineTo(width - pad.right, height - pad.bottom); }
+                ctx.stroke();
+                
+                // Title & labels
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '12px Inter';
+                ctx.textAlign = 'center';
+                ctx.fillText(title, width / 2, 18);
+                ctx.fillText(xLabel, width / 2, height - 8);
+                
+                ctx.fillStyle = color;
+                ctx.save();
+                ctx.translate(14, height / 2);
+                ctx.rotate(-Math.PI / 2);
+                ctx.fillText(yLabel, 0, 0);
+                ctx.restore();
+                
+                if (showY2 && yLabel2) {
+                    ctx.fillStyle = color2;
+                    ctx.save();
+                    ctx.translate(width - 10, height / 2);
+                    ctx.rotate(Math.PI / 2);
+                    ctx.fillText(yLabel2, 0, 0);
+                    ctx.restore();
+                }
+                
+                // Y1 axis labels
+                ctx.fillStyle = color;
+                ctx.font = '10px JetBrains Mono';
+                ctx.textAlign = 'right';
+                for (let i = 0; i <= 5; i++) {
+                    const val = (y1Max / 5) * (5 - i);
+                    ctx.fillText(val.toFixed(val >= 100 ? 0 : 1), pad.left - 8, pad.top + (ch / 5) * i + 3);
+                }
+                
+                // Y2 axis labels
+                if (showY2) {
+                    ctx.fillStyle = color2;
+                    ctx.textAlign = 'left';
+                    for (let i = 0; i <= 5; i++) {
+                        const val = y2Max - ((y2Max - y2Min) / 5) * i;
+                        ctx.fillText(val.toFixed(2), width - pad.right + 8, pad.top + (ch / 5) * i + 3);
+                    }
+                }
+                
+                // X axis labels
+                ctx.fillStyle = '#94a3b8';
+                ctx.textAlign = 'center';
+                for (let i = 0; i <= 5; i++) {
+                    const val = (xMax / 5) * i;
+                    ctx.fillText(val.toFixed(1), pad.left + (cw / 5) * i, height - pad.bottom + 18);
+                }
+                
+                // Y1 line (primary)
+                if (data.length > 1) {
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(xScale(data[0].x), y1Scale(data[0].y));
+                    for (let i = 1; i < data.length; i++) ctx.lineTo(xScale(data[i].x), y1Scale(data[i].y));
+                    ctx.stroke();
+                    
+                    // Fill
+                    ctx.fillStyle = color.replace(')', ', 0.1)').replace('rgb', 'rgba');
+                    ctx.beginPath();
+                    ctx.moveTo(xScale(data[0].x), y1Scale(0));
+                    data.forEach(d => ctx.lineTo(xScale(d.x), y1Scale(d.y)));
+                    ctx.lineTo(xScale(data[data.length-1].x), y1Scale(0));
+                    ctx.closePath();
+                    ctx.fill();
+                }
+                
+                // Y2 line (secondary)
+                if (showY2 && data.some(d => d.y2 !== undefined)) {
+                    ctx.strokeStyle = color2;
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 3]);
+                    ctx.beginPath();
+                    const validData = data.filter(d => d.y2 !== undefined);
+                    ctx.moveTo(xScale(validData[0].x), y2Scale(validData[0].y2));
+                    for (let i = 1; i < validData.length; i++) ctx.lineTo(xScale(validData[i].x), y2Scale(validData[i].y2));
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+                
+                // Peak marker
+                const peak = data.reduce((max, d) => d.y > max.y ? d : max, data[0]);
+                ctx.fillStyle = '#ef4444';
+                ctx.beginPath();
+                ctx.arc(xScale(peak.x), y1Scale(peak.y), 4, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Legend
+                ctx.font = '10px JetBrains Mono';
+                ctx.fillStyle = color;
+                ctx.textAlign = 'left';
+                ctx.fillText(`━ ${yLabel.split(' ')[0]} (max=${peak.y.toFixed(1)})`, pad.left + 5, pad.top + 12);
+                if (showY2) {
+                    ctx.fillStyle = color2;
+                    ctx.fillText(`┅ ${yLabel2?.split(' ')[0] || 'Y2'}`, pad.left + 5, pad.top + 24);
+                }
+                
+            }, [data, title, xLabel, yLabel, yLabel2, color, color2, width, height, showY2]);
+            
+            return <div className="bg-slate-800 rounded p-2"><canvas ref={canvasRef} /></div>;
+        };
+
+        // ============ BREACH DEVELOPMENT SIMULATION ============
+        const simulateBreachDevelopment = (params) => {
+            const { V_Mm3, hd, hdam, Bm, b_final, z, T_hours, C, Qinn, damKote, magArea_km2,
+                    flomlopAktiv, L_flom, kote_flom, C_flom, tilstoppingFlom } = params;
+            
+            const V0 = V_Mm3 * 1e6; // m³
+            const T_min = T_hours * 60;
+            const dt = 1; // minutes
+            const totalTime = T_min * 4; // Simulate 4x breach time
+            const magArea = magArea_km2 * 1e6; // m²
+            const L_flom_eff = L_flom * (1 - (tilstoppingFlom || 0) / 100); // Effective spillway length
+            
+            const results = [];
+            let V = V0;
+            let t = 0;
+            
+            // Initial water level (height above dam base)
+            let H_water = hd; // Water height above breach bottom at start
+            
+            while (t <= totalTime && H_water > 0.1) {
+                // Breach development (linear)
+                const breachProgress = Math.min(t / T_min, 1);
+                const B_current = Bm * breachProgress; // Middelbredde
+                const b_current = b_final * breachProgress; // Bunnbredde
+                const h_breach = hdam * breachProgress; // How deep the breach has eroded
+                
+                // Effective overflow height
+                const breachBottom = damKote - h_breach; // Bottom of breach (sinking)
+                const waterLevel = damKote + (H_water - hdam); // Absolute water level
+                const h_overflow = Math.max(0, waterLevel - breachBottom);
+                
+                // Trapezoidal breach outflow: Q = C × (b × h^1.5 + 0.8 × z × h^2.5)
+                // z = total combined side slope (both sides)
+                // Factor 0.8 = (16/15)/(2/3)/2 = 1.6/2 from weir theory with z_total
+                let Q_brudd = 0;
+                if (b_current > 0 && h_overflow > 0) {
+                    const Q_rect = b_current * Math.pow(h_overflow, 1.5);
+                    const Q_trap = 0.8 * z * Math.pow(h_overflow, 2.5);
+                    Q_brudd = C * (Q_rect + Q_trap);
+                }
+                
+                // Spillway outflow: Q = C_flom × L_eff × h_flom^1.5
+                let Q_flom = 0;
+                if (flomlopAktiv && L_flom_eff > 0 && kote_flom > 0) {
+                    const h_flom = Math.max(0, waterLevel - kote_flom);
+                    if (h_flom > 0) {
+                        Q_flom = C_flom * L_flom_eff * Math.pow(h_flom, 1.5);
+                    }
+                }
+                
+                const Qut = Q_brudd + Q_flom;
+                
+                // Volume balance
+                const dV = (Qinn - Qut) * dt * 60; // m³
+                V = Math.max(0, V + dV);
+                
+                // Update water level (simplified: constant area)
+                const dH = dV / magArea;
+                H_water = Math.max(0, H_water + dH);
+                
+                results.push({
+                    t_min: t,
+                    t_hours: t / 60,
+                    B: B_current,
+                    b: b_current,
+                    h_breach: h_breach,
+                    V_Mm3: V / 1e6,
+                    H_water: H_water,
+                    h_overflow: h_overflow,
+                    Qinn: Qinn,
+                    Q_brudd: Q_brudd,
+                    Q_flom: Q_flom,
+                    Qut: Qut,
+                    waterLevel: waterLevel,
+                    breachBottom: breachBottom,
+                    isFullyDeveloped: breachProgress >= 1
+                });
+                
+                t += dt;
+            }
+            
+            return results;
+        };
+
+        // ============ DAMBRUDD CALCULATOR ============
+        const DambruddCalculator = ({ project, addScenario }) => {
+            const [damType, setDamType] = useState('fyllingsdam');
+            const [bruddType, setBruddType] = useState('overtopping');
+            const [V, setV] = useState(119.6);
+            const [hd, setHd] = useState(10);
+            const [hdam, setHdam] = useState(10);
+            const [damLength, setDamLength] = useState(200);
+            const [z, setZ] = useState(0.5);
+            const [C_overlop, setC_overlop] = useState(1.6);
+            const [damKote, setDamKote] = useState(100);
+            const [magArea, setMagArea] = useState(12);
+            const [Qinn, setQinn] = useState(67.4);
+            
+            // Flomløp parameters
+            const [L_flom, setL_flom] = useState(30);
+            const [kote_flom, setKote_flom] = useState(99);
+            const [C_flom, setC_flom] = useState(1.6);
+            const [tilstoppingFlom, setTilstoppingFlom] = useState(0);
+            
+            const flomlopAktiv = L_flom > 0; // Flomløp aktiv når lengde > 0
+            
+            const hasValidInputs = V > 0 && hd > 0 && hdam > 0 && damLength > 0;
+            
+            const k0 = bruddType === 'overtopping' ? 1.4 : 1.0;
+            const Vm3 = (V || 0) * 1e6;
+            
+            // Froehlich formulas
+            const Bm_calc = hasValidInputs ? k0 * 0.18 * Math.pow(Vm3, 0.32) * Math.pow(hd, 0.19) : 0;
+            const T_calc = hasValidInputs ? 0.0025 * Math.pow(Vm3, 0.53) / Math.pow(hd, 0.90) : 0;
+            
+            const B_actual = Math.min(Bm_calc, damLength || Bm_calc);
+            const T_actual = B_actual < Bm_calc && Bm_calc > 0 ? T_calc * (B_actual / Bm_calc) : T_calc;
+            const b = Math.max(0, B_actual - (z || 0) * (hdam || 0) / 2);
+            const B_topp = b + (z || 0) * (hdam || 0); // Toppbredde
+            
+            // Run simulation
+            const simResults = hasValidInputs ? simulateBreachDevelopment({
+                V_Mm3: V,
+                hd: hd,
+                hdam: hdam,
+                Bm: B_actual,
+                b_final: b,
+                z: z || 0,
+                T_hours: T_actual,
+                C: C_overlop,
+                Qinn: Qinn || 0,
+                damKote: damKote || 100,
+                magArea_km2: magArea || 10,
+                flomlopAktiv: flomlopAktiv,
+                L_flom: L_flom || 0,
+                kote_flom: kote_flom || 0,
+                C_flom: C_flom || 1.6,
+                tilstoppingFlom: tilstoppingFlom || 0
+            }) : [];
+            
+            // Extract peak values
+            const Qp = simResults.length > 0 ? Math.max(...simResults.map(r => r.Qut)) : 0;
+            const peakTime = simResults.find(r => r.Qut === Qp)?.t_hours || 0;
+            const minWaterLevel = simResults.length > 0 ? Math.min(...simResults.map(r => r.H_water)) : 0;
+            const maxQ_flom = simResults.length > 0 ? Math.max(...simResults.map(r => r.Q_flom)) : 0;
+            const maxQ_brudd = simResults.length > 0 ? Math.max(...simResults.map(r => r.Q_brudd)) : 0;
+            
+            // Prepare chart data
+            const qData = simResults.map(r => ({ x: r.t_hours, y: r.Qut, y2: r.H_water }));
+            const breachData = simResults.map(r => ({ x: r.t_hours, y: r.B, y2: r.h_breach }));
+            const volumeData = simResults.map(r => ({ x: r.t_hours, y: r.V_Mm3 }));
+            
+            // Find full breach time index
+            const fullBreachIdx = simResults.findIndex(r => r.isFullyDeveloped);
+            
+            const saveScenario = () => {
+                addScenario({
+                    id: Date.now(),
+                    name: `${damType} - ${bruddType} - V=${V}Mm³`,
+                    type: 'dambrudd',
+                    damType, bruddType,
+                    inputs: { V, hd, hdam, damLength, z, k0, C_overlop, damKote, magArea, Qinn, L_flom, kote_flom, C_flom, tilstoppingFlom },
+                    results: { Bm: B_actual, T: T_actual, Qp, b, B_topp, peakTime, maxQ_brudd, maxQ_flom },
+                    simResults
+                });
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        {/* Input Column */}
+                        <div>
+                            <Section title="Damtype og bruddmekanisme">
+                                <SelectField label="Damtype" value={damType} onChange={setDamType}
+                                    options={[
+                                        { value: 'fyllingsdam', label: 'Fyllingsdam' },
+                                        { value: 'betong', label: 'Betongdam (momentant)' }
+                                    ]} />
+                                {damType === 'fyllingsdam' && (
+                                    <SelectField label="Bruddmekanisme" value={bruddType} onChange={setBruddType}
+                                        options={[
+                                            { value: 'overtopping', label: 'Overtopping (k₀=1.4) - Q1000' },
+                                            { value: 'piping', label: 'Rørerosjon (k₀=1.0) - Qm' }
+                                        ]} />
+                                )}
+                            </Section>
+                            
+                            <Section title="Magasin og dam">
+                                <InputField label="Magasinvolum (V)" value={V} onChange={setV} unit="Mm³" />
+                                <InputField label="Vannhøyde over bruddbunn (hd)" value={hd} onChange={setHd} unit="m" />
+                                <InputField label="Damhøyde (hdam)" value={hdam} onChange={setHdam} unit="m" />
+                                <InputField label="Damlengde" value={damLength} onChange={setDamLength} unit="m" />
+                                <InputField label="Damkrone kote" value={damKote} onChange={setDamKote} unit="m.o.h." />
+                                <InputField label="Magasinareal" value={magArea} onChange={setMagArea} unit="km²" tooltip="For vannstandsberegning" />
+                            </Section>
+                            
+                            <Section title="Hydrauliske parametere">
+                                <InputField label="C-faktor (brudd)" value={C_overlop} onChange={setC_overlop} unit="" min={1.3} max={2.0} step={0.05} />
+                                <InputField label="Innløp (Qinn)" value={Qinn} onChange={setQinn} unit="m³/s" tooltip="Tilsig under brudd" />
+                                {damType === 'fyllingsdam' && (
+                                    <InputField label="Sidehelning (z)" value={z} onChange={setZ} unit="H:V" min={0} max={3} step={0.1} tooltip="Total kombinert helning begge sider" />
+                                )}
+                            </Section>
+                            
+                            <Section title="Flomløp">
+                                <InputField label="Terskellengde (L)" value={L_flom} onChange={setL_flom} unit="m" min={0} tooltip="Sett 0 for ingen flomløp" />
+                                <InputField label="Terskelkote" value={kote_flom} onChange={setKote_flom} unit="m.o.h." tooltip="Kote der vann begynner å renne over" />
+                                <InputField label="C-faktor (flomløp)" value={C_flom} onChange={setC_flom} unit="" min={1.3} max={2.0} step={0.05} />
+                                <InputField label="Tilstopping" value={tilstoppingFlom} onChange={setTilstoppingFlom} unit="%" min={0} max={100} step={5} tooltip="Reduksjon pga. is, rusk, etc." />
+                            </Section>
+                        </div>
+                        
+                        {/* Results Column */}
+                        <div>
+                            <Section title="Beregningsresultater">
+                                <div className="grid grid-cols-2 gap-3">
+                                    <Result label="Middelbredde (Bm)" value={B_actual} unit="m" highlight />
+                                    <Result label="Bruddtid (T)" value={T_actual > 0 ? `${T_actual.toFixed(3)} t (${(T_actual * 60).toFixed(1)} min)` : null} highlight />
+                                    <Result label="Maks Qut (total)" value={Qp} unit="m³/s" highlight large />
+                                    <Result label="Tid til Qp" value={peakTime} unit="timer" />
+                                    <Result label="Maks Q_brudd" value={maxQ_brudd} unit="m³/s" />
+                                    {flomlopAktiv && <Result label="Maks Q_flomløp" value={maxQ_flom} unit="m³/s" />}
+                                    <Result label="Bunnbredde (b)" value={b} unit="m" />
+                                    <Result label="Toppbredde (B_topp)" value={B_topp} unit="m" />
+                                    <Result label="k₀-faktor" value={k0} />
+                                    <Result label="Sidehelning (z)" value={z} unit="H:V" />
+                                </div>
+                            </Section>
+                            
+                            <Section title="Beregningsgang (Froehlich)" defaultOpen={false}>
+                                <CalcStep step={1} formula="Bm = k₀ × 0.18 × V^0.32 × hd^0.19"
+                                    substitution={`Bm = ${k0} × 0.18 × ${Vm3.toExponential(2)}^0.32 × ${hd}^0.19`}
+                                    result={`${Bm_calc.toFixed(2)} m`} />
+                                <CalcStep step={2} formula="T = 0.0025 × V^0.53 / hd^0.90"
+                                    substitution={`T = 0.0025 × ${Vm3.toExponential(2)}^0.53 / ${hd}^0.90`}
+                                    result={`${T_calc.toFixed(4)} timer = ${(T_calc * 60).toFixed(1)} min`} />
+                                <CalcStep step={3} formula="b = Bm - z × hdam / 2"
+                                    substitution={`b = ${B_actual.toFixed(1)} - ${z} × ${hdam} / 2`}
+                                    result={`${b.toFixed(2)} m (bunnbredde)`} />
+                                <CalcStep step={4} formula="Q_brudd = C × (b × h^1.5 + 0.8 × z × h^2.5)"
+                                    substitution={`z = total sidehelning, 0.8 = 1.6/2 fra overløpsteori`}
+                                    result={`Maks Qp = ${Qp.toFixed(1)} m³/s`} />
+                                {flomlopAktiv && (
+                                    <CalcStep step={5} formula="Q_flom = C × L_eff × h_flom^1.5"
+                                        substitution={`L_eff = ${L_flom} × (1 - ${tilstoppingFlom}/100) = ${(L_flom * (1 - tilstoppingFlom/100)).toFixed(1)} m`}
+                                        result={`Terskelkote ${kote_flom} m.o.h., maks Q_flom = ${maxQ_flom.toFixed(1)} m³/s`} />
+                                )}
+                            </Section>
+                            
+                            <button onClick={saveScenario} disabled={!hasValidInputs}
+                                className="w-full mt-4 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-600 text-white py-2 px-4 rounded transition no-print">
+                                💾 Lagre scenario
+                            </button>
+                        </div>
+                        
+                        {/* Data Table Column */}
+                        <div>
+                            <Section title="Tidsserie (utvalg)" defaultOpen={true}>
+                                <div className="overflow-auto max-h-96 text-xs">
+                                    <table className="w-full mono">
+                                        <thead className="sticky top-0 bg-slate-800">
+                                            <tr className="text-slate-400 border-b border-slate-700">
+                                                <th className="text-left py-1 px-1">t (min)</th>
+                                                <th className="text-right py-1 px-1">B (m)</th>
+                                                <th className="text-right py-1 px-1">b (m)</th>
+                                                <th className="text-right py-1 px-1">H (m)</th>
+                                                <th className="text-right py-1 px-1">Q_bru</th>
+                                                {flomlopAktiv && <th className="text-right py-1 px-1">Q_flm</th>}
+                                                <th className="text-right py-1 px-1">Qut</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {simResults.filter((_, i) => i % 30 === 0 || simResults[i]?.isFullyDeveloped !== simResults[i-1]?.isFullyDeveloped).slice(0, 30).map((r, i) => (
+                                                <tr key={i} className={`border-b border-slate-800 ${r.isFullyDeveloped && !simResults[simResults.indexOf(r)-1]?.isFullyDeveloped ? 'bg-amber-900/20' : ''}`}>
+                                                    <td className="py-1 px-1">{r.t_min.toFixed(0)}</td>
+                                                    <td className="text-right py-1 px-1">{r.B.toFixed(1)}</td>
+                                                    <td className="text-right py-1 px-1 text-slate-400">{r.b.toFixed(1)}</td>
+                                                    <td className="text-right py-1 px-1 text-cyan-400">{r.H_water.toFixed(2)}</td>
+                                                    <td className="text-right py-1 px-1 text-amber-400">{r.Q_brudd.toFixed(0)}</td>
+                                                    {flomlopAktiv && <td className="text-right py-1 px-1 text-blue-400">{r.Q_flom.toFixed(0)}</td>}
+                                                    <td className="text-right py-1 px-1 text-emerald-400">{r.Qut.toFixed(0)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                {fullBreachIdx > 0 && (
+                                    <div className="mt-2 text-xs text-amber-400">
+                                        ⚡ Fullt utviklet brudd ved t = {simResults[fullBreachIdx]?.t_min.toFixed(0)} min
+                                    </div>
+                                )}
+                            </Section>
+                        </div>
+                    </div>
+                    
+                    {/* Charts Row */}
+                    {hasValidInputs && simResults.length > 0 && (
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                            <Section title="Graf 1: Vannføring og Vannstand">
+                                <Chart data={qData} title="Bruddvannføring (Q) og Vannstand (H)"
+                                    xLabel="Tid (timer)" yLabel="Q (m³/s)" yLabel2="H (m)"
+                                    color="#f59e0b" color2="#22d3ee" showY2={true} />
+                            </Section>
+                            
+                            <Section title="Graf 2: Bruddutvikling">
+                                <Chart data={breachData} title="Bruddbredde og Bruddhøyde"
+                                    xLabel="Tid (timer)" yLabel="B (m)" yLabel2="h_brudd (m)"
+                                    color="#10b981" color2="#f472b6" showY2={true} />
+                            </Section>
+                            
+                            <Section title="Graf 3: Magasinvolum">
+                                <Chart data={volumeData} title="Magasinvolum over tid"
+                                    xLabel="Tid (timer)" yLabel="V (Mm³)"
+                                    color="#8b5cf6" showY2={false} />
+                            </Section>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // ============ OVERLØP CALCULATOR (simplified) ============
+        const OverlopCalculator = () => {
+            const [C, setC] = useState(1.6);
+            const [L, setL] = useState(50);
+            const [h, setH] = useState(1.5);
+            const [tilstopping, setTilstopping] = useState(0);
+            
+            const L_eff = (L || 0) * (1 - (tilstopping || 0) / 100);
+            const Q = C * L_eff * Math.pow(h || 0, 1.5);
+            
+            const qhData = [];
+            for (let hi = 0; hi <= (h || 1) * 2; hi += 0.05) {
+                qhData.push({ x: hi, y: C * L_eff * Math.pow(hi, 1.5) });
+            }
+            
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <Section title="Parametere">
+                        <InputField label="C-faktor" value={C} onChange={setC} unit="" min={1.3} max={2.0} step={0.05} />
+                        <InputField label="Overløpslengde (L)" value={L} onChange={setL} unit="m" />
+                        <InputField label="Overfallshøyde (H)" value={h} onChange={setH} unit="m" />
+                        <InputField label="Tilstopping" value={tilstopping} onChange={setTilstopping} unit="%" min={0} max={100} />
+                        <CalcStep step={1} formula="Q = C × L × H^1.5" substitution={`Q = ${C} × ${L_eff.toFixed(1)} × ${h}^1.5`} result={`${Q.toFixed(2)} m³/s`} />
+                    </Section>
+                    <div>
+                        <Section title="Resultat">
+                            <Result label="Overløpskapasitet (Q)" value={Q} unit="m³/s" highlight large />
+                        </Section>
+                        <Section title="Q-h kurve">
+                            <Chart data={qhData} title="Avløpskurve" xLabel="h (m)" yLabel="Q (m³/s)" />
+                        </Section>
+                    </div>
+                </div>
+            );
+        };
+
+        // ============ SCENARIO COMPARISON ============
+        const ScenarioComparison = ({ scenarios, removeScenario }) => {
+            if (scenarios.length === 0) return <div className="text-center py-12 text-slate-400">Ingen scenarioer lagret</div>;
+            
+            return (
+                <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="text-slate-400 border-b border-slate-700">
+                                <th className="text-left py-3 px-2">Scenario</th>
+                                <th className="text-right py-3 px-2">Bm (m)</th>
+                                <th className="text-right py-3 px-2">T (min)</th>
+                                <th className="text-right py-3 px-2">Qp (m³/s)</th>
+                                <th className="text-right py-3 px-2">C</th>
+                                <th className="text-center py-3 px-2">Fjern</th>
+                            </tr>
+                        </thead>
+                        <tbody className="mono">
+                            {scenarios.map(s => (
+                                <tr key={s.id} className="border-b border-slate-800 hover:bg-slate-800/50">
+                                    <td className="py-2 px-2 text-amber-400">{s.name}</td>
+                                    <td className="py-2 px-2 text-right">{s.results.Bm?.toFixed(1)}</td>
+                                    <td className="py-2 px-2 text-right">{s.results.T > 0 ? (s.results.T * 60).toFixed(1) : 'Mom.'}</td>
+                                    <td className="py-2 px-2 text-right text-emerald-400">{s.results.Qp?.toFixed(1)}</td>
+                                    <td className="py-2 px-2 text-right">{s.inputs.C_overlop}</td>
+                                    <td className="py-2 px-2 text-center">
+                                        <button onClick={() => removeScenario(s.id)} className="text-red-400 hover:text-red-300">✕</button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        };
+
+        // ============ PROJECT PANEL ============
+        const ProjectPanel = ({ project, setProject, scenarios, setScenarios }) => {
+            const fileInputRef = useRef(null);
+            
+            const exportExcel = () => {
+                const wb = XLSX.utils.book_new();
+                
+                // Project sheet
+                const projectData = [
+                    ['NVE Hydro Calculator Pro v4 - Rapport'],
+                    [''],
+                    ['Prosjekt', project.name],
+                    ['Dam', project.damName],
+                    ['Vassdrag', project.vassdrag],
+                    ['Kommune', project.kommune],
+                    ['Konsekvensklasse', project.klasse],
+                    ['Ansvarlig', project.ansvarlig],
+                    ['Dato', project.dato]
+                ];
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(projectData), 'Prosjekt');
+                
+                // Scenarios sheet with extended parameters
+                if (scenarios.length > 0) {
+                    const header = ['Scenario', 'V (Mm³)', 'hd (m)', 'hdam (m)', 'z (H:V)', 'C_brudd', 'Bm (m)', 'b (m)', 'T (min)', 'Qp (m³/s)', 'Q_brudd_max', 'Q_flom_max', 'L_flom (m)', 'Kote_flom'];
+                    const data = scenarios.map(s => [
+                        s.name,
+                        s.inputs.V,
+                        s.inputs.hd,
+                        s.inputs.hdam,
+                        s.inputs.z,
+                        s.inputs.C_overlop,
+                        s.results.Bm?.toFixed(2),
+                        s.results.b?.toFixed(2),
+                        (s.results.T * 60).toFixed(1),
+                        s.results.Qp?.toFixed(1),
+                        s.results.maxQ_brudd?.toFixed(1) || '—',
+                        s.results.maxQ_flom?.toFixed(1) || '—',
+                        s.inputs.L_flom || 0,
+                        s.inputs.kote_flom || '—'
+                    ]);
+                    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...data]), 'Scenarioer');
+                    
+                    // Time series for first scenario with Q_brudd and Q_flom
+                    if (scenarios[0].simResults) {
+                        const tsHeader = ['t (min)', 't (timer)', 'B (m)', 'b (m)', 'V (Mm³)', 'H (m)', 'h_overflow (m)', 'Qinn (m³/s)', 'Q_brudd (m³/s)', 'Q_flom (m³/s)', 'Qut (m³/s)'];
+                        const tsData = scenarios[0].simResults.filter((_, i) => i % 10 === 0).map(r => [
+                            r.t_min,
+                            r.t_hours.toFixed(3),
+                            r.B.toFixed(2),
+                            r.b.toFixed(2),
+                            r.V_Mm3.toFixed(3),
+                            r.H_water.toFixed(3),
+                            r.h_overflow.toFixed(3),
+                            r.Qinn,
+                            r.Q_brudd.toFixed(2),
+                            r.Q_flom.toFixed(2),
+                            r.Qut.toFixed(2)
+                        ]);
+                        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([tsHeader, ...tsData]), 'Tidsserie');
+                    }
+                }
+                
+                // Formulas sheet
+                const formulaData = [
+                    ['Formelverk'],
+                    [''],
+                    ['Froehlich (1995)'],
+                    ['Middelbredde', 'Bm = k₀ × 0.18 × V^0.32 × hd^0.19'],
+                    ['Bruddtid', 'T = 0.0025 × V^0.53 / hd^0.90'],
+                    [''],
+                    ['Trapesgeometri'],
+                    ['Bunnbredde', 'b = Bm - z × hdam / 2'],
+                    ['Toppbredde', 'B_topp = b + z × hdam'],
+                    [''],
+                    ['Vannføring'],
+                    ['Bruddvannføring', 'Q_brudd = C × (b × h^1.5 + 0.8 × z × h^2.5)'],
+                    ['Flomløp', 'Q_flom = C × L_eff × h_flom^1.5'],
+                    ['Total', 'Qut = Q_brudd + Q_flom'],
+                    [''],
+                    ['Referanser'],
+                    ['', 'NVE Veileder 2/2022'],
+                    ['', 'NVE Retningslinjer dambruddsbølgeberegninger'],
+                    ['', 'Froehlich (1995)']
+                ];
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(formulaData), 'Formelverk');
+                
+                XLSX.writeFile(wb, `${project.name || 'NVE-Hydro'}-${new Date().toISOString().split('T')[0]}.xlsx`);
+            };
+            
+            const exportWord = async () => {
+                const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, AlignmentType, HeadingLevel, BorderStyle } = docx;
+                const border = { style: BorderStyle.SINGLE, size: 1, color: "999999" };
+                const borders = { top: border, bottom: border, left: border, right: border };
+                
+                const doc = new Document({
+                    sections: [{
+                        children: [
+                            new Paragraph({ heading: HeadingLevel.TITLE, children: [new TextRun({ text: "NVE Hydro Calculator Pro v4 - Rapport", bold: true })] }),
+                            new Paragraph({ children: [new TextRun("")] }),
+                            
+                            // Project info
+                            new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Prosjektinformasjon")] }),
+                            ...[
+                                ['Prosjektnavn', project.name],
+                                ['Dam', project.damName],
+                                ['Vassdrag', project.vassdrag],
+                                ['Kommune', project.kommune],
+                                ['Konsekvensklasse', project.klasse],
+                                ['Ansvarlig', project.ansvarlig],
+                                ['Dato', project.dato]
+                            ].map(([k, v]) => new Paragraph({ children: [new TextRun(`${k}: ${v || '—'}`)] })),
+                            new Paragraph({ children: [new TextRun("")] }),
+                            
+                            // Results table
+                            new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Resultater")] }),
+                            ...(scenarios.length > 0 ? [
+                                new Table({
+                                    rows: [
+                                        new TableRow({ 
+                                            children: ['Scenario', 'V (Mm³)', 'z', 'Bm (m)', 'b (m)', 'T (min)', 'Qp (m³/s)', 'Q_flom (m³/s)'].map(t => 
+                                                new TableCell({ borders, children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: t, bold: true })] })] })
+                                            ) 
+                                        }),
+                                        ...scenarios.map(s => new TableRow({ 
+                                            children: [
+                                                s.name,
+                                                s.inputs.V?.toString(),
+                                                s.inputs.z?.toString(),
+                                                s.results.Bm?.toFixed(1),
+                                                s.results.b?.toFixed(1),
+                                                (s.results.T * 60).toFixed(1),
+                                                s.results.Qp?.toFixed(1),
+                                                s.results.maxQ_flom?.toFixed(1) || '0'
+                                            ].map(t => new TableCell({ borders, children: [new Paragraph({ children: [new TextRun(String(t || '—'))] })] }))
+                                        }))
+                                    ]
+                                })
+                            ] : [new Paragraph({ children: [new TextRun("Ingen scenarioer lagret")] })]),
+                            new Paragraph({ children: [new TextRun("")] }),
+                            
+                            // Formulas
+                            new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Formelverk")] }),
+                            new Paragraph({ children: [new TextRun({ text: "Froehlich (1995):", bold: true })] }),
+                            new Paragraph({ children: [new TextRun("  Bm = k₀ × 0.18 × V^0.32 × hd^0.19")] }),
+                            new Paragraph({ children: [new TextRun("  T = 0.0025 × V^0.53 / hd^0.90")] }),
+                            new Paragraph({ children: [new TextRun("")] }),
+                            new Paragraph({ children: [new TextRun({ text: "Trapesgeometri:", bold: true })] }),
+                            new Paragraph({ children: [new TextRun("  b = Bm - z × hdam / 2  (bunnbredde)")] }),
+                            new Paragraph({ children: [new TextRun("  B_topp = b + z × hdam  (toppbredde)")] }),
+                            new Paragraph({ children: [new TextRun("")] }),
+                            new Paragraph({ children: [new TextRun({ text: "Vannføring:", bold: true })] }),
+                            new Paragraph({ children: [new TextRun("  Q_brudd = C × (b × h^1.5 + 0.8 × z × h^2.5)")] }),
+                            new Paragraph({ children: [new TextRun("  Q_flom = C × L_eff × h_flom^1.5")] }),
+                            new Paragraph({ children: [new TextRun("  Qut = Q_brudd + Q_flom")] }),
+                            new Paragraph({ children: [new TextRun("")] }),
+                            
+                            // References
+                            new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Referanser")] }),
+                            new Paragraph({ children: [new TextRun("• NVE Veileder 2/2022")] }),
+                            new Paragraph({ children: [new TextRun("• NVE Retningslinjer dambruddsbølgeberegninger")] }),
+                            new Paragraph({ children: [new TextRun("• Froehlich, D.C. (1995). Peak Outflow from Breached Embankment Dam")] }),
+                        ]
+                    }]
+                });
+                
+                const blob = await Packer.toBlob(doc);
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `${project.name || 'NVE-Hydro'}.docx`;
+                a.click();
+            };
+            
+            const saveJSON = () => {
+                const blob = new Blob([JSON.stringify({ ...project, scenarios, version: '4.0' }, null, 2)], { type: 'application/json' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `${project.name || 'prosjekt'}.json`;
+                a.click();
+            };
+            
+            const loadJSON = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.target.result);
+                        setProject({ name: data.name || '', damName: data.damName || '', vassdrag: data.vassdrag || '', kommune: data.kommune || '', klasse: data.klasse || '3', ansvarlig: data.ansvarlig || '', dato: data.dato || '' });
+                        setScenarios(data.scenarios || []);
+                    } catch (err) { alert('Feil: ' + err.message); }
+                };
+                reader.readAsText(file);
+            };
+            
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <Section title="Prosjektinformasjon">
+                        <TextInput label="Prosjektnavn" value={project.name} onChange={(v) => setProject({...project, name: v})} />
+                        <TextInput label="Damnavn" value={project.damName} onChange={(v) => setProject({...project, damName: v})} />
+                        <TextInput label="Vassdrag" value={project.vassdrag} onChange={(v) => setProject({...project, vassdrag: v})} />
+                        <TextInput label="Kommune" value={project.kommune} onChange={(v) => setProject({...project, kommune: v})} />
+                        <SelectField label="Konsekvensklasse" value={project.klasse} onChange={(v) => setProject({...project, klasse: v})}
+                            options={[{ value: '4', label: 'Klasse 4' }, { value: '3', label: 'Klasse 3' }, { value: '2', label: 'Klasse 2' }, { value: '1', label: 'Klasse 1' }, { value: '0', label: 'Klasse 0' }]} />
+                        <TextInput label="Ansvarlig" value={project.ansvarlig} onChange={(v) => setProject({...project, ansvarlig: v})} />
+                        <TextInput label="Dato" value={project.dato} onChange={(v) => setProject({...project, dato: v})} />
+                    </Section>
+                    <div>
+                        <Section title="Eksporter">
+                            <div className="grid grid-cols-3 gap-2">
+                                <button onClick={saveJSON} className="bg-slate-600 hover:bg-slate-500 text-white py-3 px-2 rounded transition text-sm">💾 JSON</button>
+                                <button onClick={exportExcel} className="bg-emerald-600 hover:bg-emerald-500 text-white py-3 px-2 rounded transition text-sm">📊 Excel</button>
+                                <button onClick={exportWord} className="bg-blue-600 hover:bg-blue-500 text-white py-3 px-2 rounded transition text-sm">📄 Word</button>
+                            </div>
+                        </Section>
+                        <Section title="Åpne prosjekt">
+                            <input type="file" ref={fileInputRef} onChange={loadJSON} accept=".json" className="hidden" />
+                            <button onClick={() => fileInputRef.current?.click()} className="w-full bg-slate-700 hover:bg-slate-600 text-white py-3 rounded">📂 Åpne .json</button>
+                        </Section>
+                        <Section title="Print">
+                            <button onClick={() => window.print()} className="w-full bg-slate-700 hover:bg-slate-600 text-white py-3 rounded">🖨️ Print / PDF</button>
+                        </Section>
+                    </div>
+                </div>
+            );
+        };
+
+        // ============ MAIN APP ============
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('dambrudd');
+            const [project, setProject] = useState({ name: '', damName: '', vassdrag: '', kommune: '', klasse: '3', ansvarlig: '', dato: new Date().toISOString().split('T')[0] });
+            const [scenarios, setScenarios] = useState([]);
+            
+            const tabs = [
+                { id: 'prosjekt', label: '📁 Prosjekt' },
+                { id: 'dambrudd', label: '🌊 Dambrudd' },
+                { id: 'overlop', label: '⬇️ Overløp' },
+                { id: 'sammenlign', label: '📊 Sammenlign' }
+            ];
+
+            return (
+                <div className="max-w-7xl mx-auto p-4">
+                    <header className="mb-6 text-center">
+                        <h1 className="text-3xl font-bold text-amber-400 mb-2">NVE Hydro Calculator Pro v4</h1>
+                        <p className="text-slate-400">Dambruddsbølgeberegninger med trapesformel og flomløp</p>
+                    </header>
+                    
+                    <nav className="flex flex-wrap gap-1 mb-6 bg-slate-800 p-1 rounded-lg no-print">
+                        {tabs.map(tab => (
+                            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                                className={`px-4 py-2 rounded transition text-sm font-medium ${activeTab === tab.id ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}>
+                                {tab.label}
+                            </button>
+                        ))}
+                    </nav>
+                    
+                    <main className="bg-slate-800/30 rounded-lg p-6">
+                        {activeTab === 'prosjekt' && <ProjectPanel project={project} setProject={setProject} scenarios={scenarios} setScenarios={setScenarios} />}
+                        {activeTab === 'dambrudd' && <DambruddCalculator project={project} addScenario={(s) => setScenarios(prev => [...prev, s])} />}
+                        {activeTab === 'overlop' && <OverlopCalculator />}
+                        {activeTab === 'sammenlign' && <ScenarioComparison scenarios={scenarios} removeScenario={(id) => setScenarios(prev => prev.filter(s => s.id !== id))} />}
+                    </main>
+                    
+                    <footer className="mt-8 text-center text-sm text-slate-500 border-t border-slate-800 pt-6">
+                        <p>NVE Veileder 2/2022 | NVE Retningslinjer dambruddsbølgeberegninger | Froehlich (1995)</p>
+                        <p className="text-amber-500/70 mt-1">Q_brudd = C × (b × h^1.5 + 0.8 × z × h^2.5) | Volumbalanse: dV/dt = Qinn - Qut</p>
+                    </footer>
+                </div>
+            );
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>

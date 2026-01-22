@@ -113,7 +113,7 @@ Ingen installasjon nødvendig!
 
 ## Lisens
 
-MIT License - Fri bruk, også kommersielt. Se [LICENSE](LICENSE).
+MIT License - Fri bruk, også kommersielt.
 
 ## Referanser
 
@@ -124,3 +124,5 @@ MIT License - Fri bruk, også kommersielt. Se [LICENSE](LICENSE).
 ## Tilbakemelding
 
 Fant du en feil? Har du forslag til forbedringer? Opprett en [issue](../../issues) eller send en pull request.
+
+Disclaimer: Kunstig intelligens er brukt til opprettelse av programmet, og denne teksten.
